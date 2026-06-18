@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Road Warrior Options Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>Road Warrior <span>Options Dashboard</span></h1>
+    <p id="updated">Loading...</p>
+    <p id="progress" class="progress">Scanning {{ universe_size }} tickers across the whole market...</p>
+  </header>
+
+  <main>
+    <section>
+      <h2 class="section-title">Top Picks</h2>
+      <div id="top-picks" class="cards"></div>
+      <p id="no-picks" class="meta" style="display:none;">No high-confluence setups right now - check back at your next stop.</p>
+    </section>
+
+    <section>
+      <h2 class="section-title">Full Scan Results <span id="scan-count" class="meta"></span></h2>
+      <div id="cards" class="cards"></div>
+    </section>
+
+    <section>
+      <h2 class="section-title">Track Record</h2>
+      <div id="track-summary" class="track-summary"></div>
+      <div id="track-list"></div>
+      <p id="no-track" class="meta" style="display:none;">No calls have finished yet - check back once a contract reaches its expiration date.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Informational only - not financial advice. Always confirm contract price in your broker app before trading.</p>
+  </footer>
+
+  <script>
+    const maxContractCost = "${{ '%.0f'|format(max_contract_cost) }}";
+
+    function cardHtml(r) {
+      if (r.error) {
+        return `<div class="card neutral"><div class="symbol">${r.symbol}</div><div class="lean">No data</div></div>`;
+      }
+      let cls = "neutral";
+      if (r.lean === "Lean CALLS") cls = "bullish";
+      if (r.lean === "Lean PUTS") cls = "bearish";
+
+      let contractHtml = "";
+      if (r.contract) {
+        const c = r.contract;
+        const letter = c.option_type === "call" ? "C" : "P";
+        const liquidity = c.volume || c.open_interest || 0;
+        const liquidityLabel = c.volume ? "Vol" : "OI";
+        contractHtml = `
+          <div class="contract">$${c.strike}${letter} exp ${c.expiration_display} &middot; Ask $${c.ask.toFixed(2)} &middot; &Delta;${c.delta} &middot; ${c.dte}d &middot; ${liquidityLabel} ${liquidity}</div>`;
+      } else if (r.lean === "Lean CALLS" || r.lean === "Lean PUTS") {
+        contractHtml = `<div class="meta contract-missing">No contract found under ${maxContractCost}/contract budget</div>`;
+      }
+
+      return `
+        <div class="card ${cls}">
+          <div class="symbol">${r.symbol} <span class="price">$${r.price}</span></div>
+          <div class="lean">${r.lean}</div>
+          ${contractHtml}
+          <div class="meta">Entry TF: ${r.entry_direction} ${r.entry_score}/5</div>
+          <div class="meta">Confirm TF: ${r.confirm_direction} ${r.confirm_score}/5</div>
+          <div class="meta">RSI: ${r.rsi}</div>
+        </div>`;
+    }
+
+    function trackRowHtml(r) {
+      const letter = r.option_type === "call" ? "C" : "P";
+      const badgeLabel = r.status === "win" ? "WIN" : "LOSS";
+      const reasonLabel = r.close_reason === "reached_strike" ? "reached strike"
+        : r.close_reason === "favorable_move" ? "moved in your favor"
+        : "never moved in your favor";
+      return `
+        <div class="track-row ${r.status}">
+          <div class="track-desc">
+            <strong>${r.symbol} $${r.strike}${letter}</strong> exp ${r.expiration_display}
+            <span class="meta">entry $${r.entry_price} &rarr; best $${Math.round(r.best_price * 100) / 100} (${reasonLabel})</span>
+          </div>
+          <span class="badge ${r.status}">${badgeLabel}</span>
+        </div>`;
+    }
+
+    function renderTrackRecord(tr) {
+      const summaryEl = document.getElementById("track-summary");
+      const listEl = document.getElementById("track-list");
+      const noTrackEl = document.getElementById("no-track");
+
+      const closed = tr.wins + tr.losses;
+      const winRateClass = tr.win_rate === null ? "" : (tr.win_rate >= 50 ? "win-rate-good" : "win-rate-bad");
+      const winRateText = tr.win_rate === null ? "--" : `${tr.win_rate}%`;
+
+      summaryEl.innerHTML = `
+        <div class="stat-box"><span class="stat-value ${winRateClass}">${winRateText}</span><span class="stat-label">Win rate</span></div>
+        <div class="stat-box"><span class="stat-value win-count">${tr.wins}</span><span class="stat-label">Wins</span></div>
+        <div class="stat-box"><span class="stat-value loss-count">${tr.losses}</span><span class="stat-label">Losses</span></div>
+        <div class="stat-box"><span class="stat-value">${tr.open}</span><span class="stat-label">Open</span></div>`;
+
+      listEl.innerHTML = "";
+      if (closed === 0) {
+        noTrackEl.style.display = "block";
+      } else {
+        noTrackEl.style.display = "none";
+        tr.recent.forEach((r) => listEl.insertAdjacentHTML("beforeend", trackRowHtml(r)));
+      }
+    }
+
+    async function loadSignals() {
+      const updatedEl = document.getElementById("updated");
+      const progressEl = document.getElementById("progress");
+      const picksEl = document.getElementById("top-picks");
+      const noPicksEl = document.getElementById("no-picks");
+      const cardsEl = document.getElementById("cards");
+      const scanCountEl = document.getElementById("scan-count");
+      try {
+        const res = await fetch("/api/signals");
+        const data = await res.json();
+
+        picksEl.innerHTML = "";
+        if (data.top_picks.length === 0) {
+          noPicksEl.style.display = "block";
+        } else {
+          noPicksEl.style.display = "none";
+          data.top_picks.forEach((r) => picksEl.insertAdjacentHTML("beforeend", cardHtml(r)));
+        }
+
+        cardsEl.innerHTML = "";
+        data.results.forEach((r) => cardsEl.insertAdjacentHTML("beforeend", cardHtml(r)));
+
+        renderTrackRecord(data.track_record);
+
+        scanCountEl.textContent = `(${data.tickers_scanned} / ${data.universe_size} checked so far)`;
+
+        const lastFull = data.last_full_rotation_completed_at;
+        if (lastFull) {
+          const d = new Date(lastFull * 1000);
+          progressEl.textContent = `Last full market pass finished ${d.toLocaleTimeString()} - now rescanning (batch ${data.current_batch_index + 1}/${data.num_batches})`;
+        } else {
+          progressEl.textContent = `First pass in progress - batch ${data.current_batch_index + 1}/${data.num_batches} (${data.tickers_scanned}/${data.universe_size} tickers so far)`;
+        }
+
+        const d2 = new Date(data.updated * 1000);
+        updatedEl.textContent = "Updated " + d2.toLocaleTimeString();
+      } catch (e) {
+        updatedEl.textContent = "Could not load data - will retry...";
+      }
+    }
+    loadSignals();
+    setInterval(loadSignals, 60000);
+  </script>
+</body>
+</html>
