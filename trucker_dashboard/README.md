@@ -11,12 +11,13 @@ non-technical setup instructions. Quick technical summary:
 
 ## How the market-wide scan works
 
-Scanning all ~460 tickers every minute would blow past Finnhub's free
-60-calls/minute limit (each ticker costs 2 calls). So the scan is split into
-small rotating batches:
+Scanning all ~460 tickers every minute would hammer yfinance (a free,
+unofficial data source with no published rate limit) far harder than
+necessary. So the scan is split into small rotating batches:
 
 - `config.py` defines `UNIVERSE` (the ~460-ticker scan list) and `BATCH_SIZE`
-  (25 tickers per batch = 50 API calls, well inside the free limit).
+  (25 tickers per batch, which keeps each scan-batch call quick and spreads
+  the lookups out over the rotation instead of firing all ~460 at once).
 - Every call to `/api/scan-batch` scans the *next* batch in the rotation and
   merges the results into a running, cumulative picture of the whole market.
 - With `BATCH_SIZE=25` and a 1-minute cron interval, a full pass over all
@@ -26,7 +27,23 @@ small rotating batches:
 - The dashboard's "Top Picks" and "Full Scan Results" reflect whatever has
   been scanned so far in the current rotation, refreshed continuously.
 
-## How option contracts are picked (yfinance)
+## Price data and option contracts (yfinance)
+
+Both the stock-level candles (`data_provider.py`) and the option contracts
+(`options_provider.py`) come from yfinance (free, unofficial Yahoo Finance
+data) - no signup, no API key, no identity verification, no env vars to set
+for either one. This app originally used Finnhub for candles, but Finnhub
+moved its intraday candle endpoint behind a paid plan (free keys now get a
+403 Forbidden on every symbol), so candles were switched to yfinance to
+match the options side and drop the paid dependency entirely.
+
+yfinance is an unofficial data source (it scrapes Yahoo's public site rather
+than calling a documented API), so it can occasionally hiccup or get
+rate-limited. If that ever becomes a persistent problem, `data_provider.py`
+and `options_provider.py` are both isolated files that can be swapped for a
+paid provider without touching the rest of the app.
+
+### How option contracts are picked
 
 Once a ticker qualifies (Lean CALLS / Lean PUTS), `contract_picker.py` turns
 that stock-level lean into ONE specific, tradeable contract using a few
@@ -52,20 +69,13 @@ well-established options-buying heuristics:
   alternative signal. Both the text digest and dashboard card show
   whichever figure (volume or open interest) qualified the pick.
 
-Contract data comes from `options_provider.py`, a thin wrapper around
-yfinance (free Yahoo Finance data) - no signup, no API key, no identity
-verification, no env vars to set. Yahoo doesn't publish greeks, so delta is
-computed locally with the standard Black-Scholes formula using Yahoo's
-implied volatility (see `RISK_FREE_RATE` in `config.py`); it's a
-well-established approximation, not a broker's live greeks feed, but plenty
-accurate for picking a delta-target strike. yfinance is an unofficial data
-source (it scrapes Yahoo's public site rather than calling a documented
-API), so it can occasionally hiccup or get rate-limited - if that ever
-becomes a problem, `options_provider.py` is an isolated file that can be
-swapped for a paid provider (Tradier, MarketData.app, etc.) without
-touching `contract_picker.py` or anything else. If no contract fits the
-budget/window, the text alert and dashboard fall back to just the
-stock-level lean with a "no contract found under budget" note.
+Yahoo doesn't publish greeks, so delta is computed locally with the standard
+Black-Scholes formula using Yahoo's implied volatility (see
+`RISK_FREE_RATE` in `config.py`); it's a well-established approximation,
+not a broker's live greeks feed, but plenty accurate for picking a
+delta-target strike. If no contract fits the budget/window, the text alert
+and dashboard fall back to just the stock-level lean with a "no contract
+found under budget" note.
 
 ## Track record (win/loss)
 
@@ -93,7 +103,6 @@ free/database-free.
 ## Local run
 ```
 pip install -r requirements.txt
-export FINNHUB_API_KEY=your_key
 python app.py
 ```
 Visit http://localhost:5000
