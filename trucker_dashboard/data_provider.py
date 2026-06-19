@@ -1,50 +1,66 @@
 """
-Thin wrapper around the Finnhub free API, with a small in-memory cache so we
-stay comfortably inside the free plan's 60-calls-per-minute limit even when
-the dashboard auto-refreshes.
-"""
-import os
-import time
-import requests
+Thin wrapper around yfinance (unofficial Yahoo Finance data) for OHLCV
+candles - no signup, no API key needed.
 
-FINNHUB_BASE = "https://finnhub.io/api/v1"
+This app originally pulled candles from Finnhub's free API, but Finnhub has
+since moved its intraday /stock/candle endpoint behind a paid plan - free
+keys now get a 403 Forbidden on every symbol, which is why a full day of
+scanning could complete 19/19 batches while never actually checking a single
+ticker. Yahoo's intraday history is the same kind of free, unofficial data
+this app already relies on for option chains (see options_provider.py), so
+candles were switched over to match it - one less paid dependency, and one
+less thing that can silently break a whole day of scanning.
+
+NOTE: yfinance only keeps a limited intraday history window (roughly 60 days
+for 15m/60m bars), which is well within the lookbacks this app actually asks
+for (config.py's ENTRY_LOOKBACK_SECONDS / CONFIRM_LOOKBACK_SECONDS are a few
+days to a few weeks), so nothing here is cut short by that limit.
+"""
+import time
+from datetime import datetime, timedelta
+
+import yfinance as yf
 
 _cache = {}
 CACHE_TTL = 55  # seconds
 
 
-def _api_key():
-    key = os.environ.get("FINNHUB_API_KEY", "")
-    if not key:
-        raise RuntimeError("FINNHUB_API_KEY environment variable is not set")
-    return key
-
-
-def _cached_get(url, params, ttl=CACHE_TTL):
-    cache_key = url + "|" + str(sorted(params.items()))
+def _cached(key, fetch_fn):
     now = time.time()
-    if cache_key in _cache and now - _cache[cache_key][0] < ttl:
-        return _cache[cache_key][1]
+    if key in _cache and now - _cache[key][0] < CACHE_TTL:
+        return _cache[key][1]
+    value = fetch_fn()
+    _cache[key] = (now, value)
+    return value
 
-    full_params = dict(params)
-    full_params["token"] = _api_key()
-    resp = requests.get(url, params=full_params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    _cache[cache_key] = (now, data)
-    return data
+
+def _yf_interval(resolution):
+    """Map this app's old Finnhub-style resolution strings ('15', '60', ...,
+    still set in config.py as ENTRY_RESOLUTION/CONFIRM_RESOLUTION) to a
+    yfinance interval string."""
+    if resolution.isdigit():
+        return f"{resolution}m"
+    return {"D": "1d", "W": "1wk", "M": "1mo"}.get(resolution, resolution)
 
 
 def get_candles(symbol, resolution, lookback_seconds):
-    """resolution: Finnhub resolution string, e.g. '15' or '60' (minutes)."""
-    now = int(time.time())
-    frm = now - lookback_seconds
-    data = _cached_get(f"{FINNHUB_BASE}/stock/candle", {
-        "symbol": symbol,
-        "resolution": resolution,
-        "from": frm,
-        "to": now,
-    })
-    if data.get("s") != "ok":
-        raise RuntimeError(f"No candle data for {symbol} (status={data.get('s')})")
-    return {"o": data["o"], "h": data["h"], "l": data["l"], "c": data["c"], "v": data["v"], "t": data["t"]}
+    """resolution: '15' or '60' (minutes), matching config.py.
+    Returns a dict with keys 'o','h','l','c','v' (oldest -> newest lists)."""
+    interval = _yf_interval(resolution)
+
+    def fetch():
+        # +1 day of buffer on top of the requested lookback so a holiday/
+        # weekend gap never leaves us short of bars.
+        days = max(1, -(-lookback_seconds // 86400)) + 1
+        start = datetime.utcnow() - timedelta(days=days)
+        hist = yf.Ticker(symbol).history(start=start, interval=interval)
+        if hist is None or hist.empty:
+            raise RuntimeError(f"No candle data for {symbol}")
+        return {
+            "o": hist["Open"].tolist(),
+            "h": hist["High"].tolist(),
+            "l": hist["Low"].tolist(),
+            "c": hist["Close"].tolist(),
+            "v": hist["Volume"].tolist(),
+        }
+    return _cached(f"candles|{symbol}|{resolution}|{lookback_seconds}", fetch)
