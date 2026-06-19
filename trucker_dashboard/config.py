@@ -48,12 +48,14 @@ UNIVERSE = [
 ]
 
 # How many tickers to fetch+score per cron-triggered scan call. Kept small on
-# purpose: each ticker costs 2 Finnhub API calls (entry TF + confirm TF), and
-# Finnhub's free tier caps out at 60 calls/minute. 25 tickers = 50 calls,
-# leaving headroom and finishing well inside a single web request.
+# purpose: each ticker costs 2 candle lookups (entry TF + confirm TF) plus an
+# options chain lookup, all against yfinance's free, unofficial, unrated
+# endpoint - smaller batches finish comfortably inside a single web request
+# and spread the load out instead of hammering Yahoo all at once.
 BATCH_SIZE = 25
 
-# Finnhub candle resolutions (minutes)
+# Candle resolutions in minutes (passed to yfinance as e.g. "15m"/"60m" -
+# see data_provider.py)
 ENTRY_RESOLUTION = "15"      # entry timeframe
 CONFIRM_RESOLUTION = "60"    # confirmation timeframe
 
