@@ -75,7 +75,7 @@ def compute_ticker(symbol):
 
 
 def attach_contract(result):
-    """Only spend a Tradier lookup on tickers that actually qualified -
+    """Only spend an options-chain lookup on tickers that actually qualified -
     most of a 25-ticker batch will be WAIT, and there's no contract to pick
     for those."""
     if result.get("lean") not in ACTIONABLE_LEANS:
@@ -137,9 +137,9 @@ def api_signals():
 def scan_batch():
     """Hit this endpoint from a free scheduler (cron-job.org) every minute
     during market hours. Each call scans ONE rotating slice of the full
-    market universe (so it stays well inside Finnhub's free 60-calls/min
-    limit) and merges the results into a running, full-market picture.
-    A text digest goes out only when the ranked top-N list actually changes."""
+    market universe (so it doesn't hammer yfinance all at once) and merges
+    the results into a running, full-market picture. A text digest goes out
+    only when the ranked top-N list actually changes."""
     cron_token = os.environ.get("CRON_TOKEN", "")
     token = request.args.get("token", "")
     if not cron_token or token != cron_token:
