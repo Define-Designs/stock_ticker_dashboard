@@ -153,7 +153,12 @@ def scan_batch():
 
     checked, errors = [], []
     now = time.time()
-    for symbol in batch_symbols:
+    for i, symbol in enumerate(batch_symbols):
+        if i > 0:
+            # Small gap between tickers so this batch's ~50 yfinance calls
+            # (2 candle lookups each) trickle out instead of firing in a
+            # tight burst - bursts are what trip Yahoo's rate limiting.
+            time.sleep(0.4)
         try:
             result = compute_ticker(symbol)
             result = attach_contract(result)
