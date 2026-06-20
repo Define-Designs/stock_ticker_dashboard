@@ -15,9 +15,16 @@ NOTE: yfinance only keeps a limited intraday history window (roughly 60 days
 for 15m/60m bars), which is well within the lookbacks this app actually asks
 for (config.py's ENTRY_LOOKBACK_SECONDS / CONFIRM_LOOKBACK_SECONDS are a few
 days to a few weeks), so nothing here is cut short by that limit.
+
+NOTE: candles are fetched with history(period=...), not history(start=...).
+Passing a start/end date makes yfinance fire an extra "timezone lookup"
+request before the real data request; when Yahoo throttles that lookup
+(429), yfinance mishandles the response and raises a misleading
+"Expecting value: line 1 column 1 (char 0)" JSON error on every single
+ticker instead of a clear rate-limit error. Using period= skips that extra
+request entirely and avoids the bug (see yfinance issue #2179 on GitHub).
 """
 import time
-from datetime import datetime, timedelta
 
 import yfinance as yf
 
@@ -43,17 +50,30 @@ def _yf_interval(resolution):
     return {"D": "1d", "W": "1wk", "M": "1mo"}.get(resolution, resolution)
 
 
+def _yf_period(lookback_seconds):
+    """Map a lookback window to one of yfinance's fixed period= buckets
+    (the strings it actually accepts), padded up generously so a
+    holiday/weekend gap never leaves us short of bars. Deliberately coarse -
+    Yahoo's own ~60-day cap on intraday history means there's no benefit to
+    finer-grained buckets here."""
+    days = lookback_seconds / 86400
+    if days <= 5:
+        return "5d"
+    if days <= 30:
+        return "1mo"
+    if days <= 60:
+        return "3mo"
+    return "6mo"
+
+
 def get_candles(symbol, resolution, lookback_seconds):
     """resolution: '15' or '60' (minutes), matching config.py.
     Returns a dict with keys 'o','h','l','c','v' (oldest -> newest lists)."""
     interval = _yf_interval(resolution)
+    period = _yf_period(lookback_seconds)
 
     def fetch():
-        # +1 day of buffer on top of the requested lookback so a holiday/
-        # weekend gap never leaves us short of bars.
-        days = max(1, -(-lookback_seconds // 86400)) + 1
-        start = datetime.utcnow() - timedelta(days=days)
-        hist = yf.Ticker(symbol).history(start=start, interval=interval)
+        hist = yf.Ticker(symbol).history(period=period, interval=interval)
         if hist is None or hist.empty:
             raise RuntimeError(f"No candle data for {symbol}")
         return {
